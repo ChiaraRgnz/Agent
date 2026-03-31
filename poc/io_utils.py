@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .model import Row
 
@@ -66,7 +66,7 @@ def summarize_conditions(rows: List[Row]) -> Tuple[List[float], List[float]]:
     return doses, tinfs
 
 
-def load_metadata(meta_path: Path) -> Dict:
+def load_metadata(meta_path: Path) -> Dict[str, Any]:
     """Load metadata JSON if it exists."""
     if meta_path.exists():
         with meta_path.open(encoding="utf-8") as f:

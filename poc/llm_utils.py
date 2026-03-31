@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 import pdfplumber
 from anthropic import Anthropic
@@ -41,6 +41,41 @@ def extract_paper_insights(pdf_path: Path, api_key: str, model_name: str) -> Dic
         messages=[{"role": "user", "content": prompt}],
     )
     content = msg.content[0].text if msg.content else ""
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"raw": content}
+
+
+def extract_paper_insights_gemini(
+    pdf_path: Path, api_key: str, model_name: str = "gemini-1.5-flash"
+) -> Dict[str, Any]:
+    """Call Gemini to extract key model details from a PK paper."""
+    try:
+        import google.generativeai as genai
+    except Exception as exc:
+        return {"error": f"missing_google_generativeai: {exc}"}
+
+    text = extract_pdf_text(pdf_path)
+    if not text.strip():
+        return {"error": "no_text_extracted"}
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+    prompt = (
+        "You are reading a PK/PD paper. Extract the model details as JSON.\n"
+        "Return compact JSON with keys: model_structure, dosing, parameters, units, "
+        "estimation_method, reported_results, notes.\n"
+        "If a field is not found, set it to null.\n\n"
+        f"PAPER TEXT:\n{text}\n"
+    )
+    response = model.generate_content(
+        prompt,
+        generation_config={"temperature": 0, "max_output_tokens": 800},
+    )
+    content = response.text or ""
+    # Strip markdown code fences if present
+    content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
         return json.loads(content)
     except json.JSONDecodeError:

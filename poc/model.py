@@ -51,8 +51,20 @@ def sse_for(rows: Iterable[Row], cl: float, v: float) -> float:
 
 def grid_search(rows: List[Row]) -> Tuple[float, float, float]:
     """Coarse grid-search fit returning (sse, cl, v)."""
-    cl_grid = logspace(0.1, 50.0, 25)
-    v_grid = logspace(1.0, 300.0, 25)
+    return grid_search_bounded(rows, 0.1, 50.0, 1.0, 300.0)
+
+
+def grid_search_bounded(
+    rows: List[Row],
+    cl_min: float,
+    cl_max: float,
+    v_min: float,
+    v_max: float,
+    n: int = 25,
+) -> Tuple[float, float, float]:
+    """Grid-search fit within explicit CL and V bounds, returning (sse, cl, v)."""
+    cl_grid = logspace(cl_min, cl_max, n)
+    v_grid = logspace(v_min, v_max, n)
     best = (float("inf"), 0.0, 0.0)
     for cl in cl_grid:
         for v in v_grid:

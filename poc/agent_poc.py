@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import math
 from concurrent.futures import ThreadPoolExecutor
+from typing import List
 
 from .agents import (
     AgentState,
@@ -20,7 +21,7 @@ from .agents import (
     should_stop,
 )
 from .io_utils import read_rows
-from .model import group_by_subject
+from .model import Row, group_by_subject
 
 
 DATA_CSV = Path("data/pkpd_acocella_1984_data.csv")
@@ -29,9 +30,10 @@ OUT_RESULTS = Path("poc/results.csv")
 OUT_REPORT = Path("poc/report.md")
 PAPER_PDF = Path("data/acocella_1984_paper.pdf")
 
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 5
 NO_IMPROVEMENT_STOP = 2
 ANTHROPIC_MODEL = "claude-3-5-sonnet-latest"
+GEMINI_MODEL = "gemini-1.5-flash"
 LOCAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
 
 
@@ -41,7 +43,12 @@ def run_agent_loop(state: AgentState) -> None:
     iteration = 0
     while True:
         provider = _llm_provider()
-        model_name = ANTHROPIC_MODEL if provider == "anthropic" else _local_model()
+        if provider == "anthropic":
+            model_name = ANTHROPIC_MODEL
+        elif provider == "gemini":
+            model_name = GEMINI_MODEL
+        else:
+            model_name = _local_model()
         paper_future = None
         if _parallel_enabled():
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -49,7 +56,7 @@ def run_agent_loop(state: AgentState) -> None:
                     agent_read_paper,
                     state,
                     PAPER_PDF,
-                    _anthropic_key(),
+                    _llm_api_key(),
                     model_name,
                     provider,
                 )
@@ -61,7 +68,7 @@ def run_agent_loop(state: AgentState) -> None:
         else:
             for agent in agents:
                 agent(state)
-            agent_read_paper(state, PAPER_PDF, _anthropic_key(), model_name, provider)
+            agent_read_paper(state, PAPER_PDF, _llm_api_key(), model_name, provider)
         agent_report(state, OUT_RESULTS, OUT_REPORT, META_JSON)
         if should_stop(state, iteration, MAX_ITERATIONS, NO_IMPROVEMENT_STOP):
             break
@@ -85,6 +92,16 @@ def _anthropic_key() -> str:
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
 
+def _llm_api_key() -> str:
+    """Return the API key for the active LLM provider."""
+    import os
+
+    provider = _llm_provider()
+    if provider == "gemini":
+        return os.environ.get("GOOGLE_API_KEY", "")
+    return _anthropic_key()
+
+
 def _llm_provider() -> str:
     """Return the LLM provider: 'anthropic' or 'local'."""
     import os
@@ -106,7 +123,7 @@ def _smoke_test_enabled() -> bool:
     return os.environ.get("SMOKE_TEST", "0").strip() == "1"
 
 
-def _smoke_subset(rows):
+def _smoke_subset(rows: List[Row]) -> List[Row]:
     """Return a tiny subset for low-resource smoke testing."""
     # Pick first subject and first 5 observations.
     if not rows:

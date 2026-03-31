@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 from .io_utils import summarize_conditions, write_results, load_metadata
-from .llm_utils import extract_paper_insights, extract_paper_insights_local
-from .model import Row, grid_search
+from .llm_utils import extract_paper_insights, extract_paper_insights_gemini, extract_paper_insights_local
+from .model import Row, grid_search_bounded
+
+# Initial search bounds
+_CL_BOUNDS_DEFAULT: Tuple[float, float] = (0.1, 50.0)
+_V_BOUNDS_DEFAULT: Tuple[float, float] = (1.0, 300.0)
 
 
 @dataclass
@@ -19,18 +24,34 @@ class AgentState:
     last_rmse: Optional[float] = None
     no_improve_count: int = 0
     paper_insights: Optional[Dict[str, Any]] = None
+    # Agentic loop state: enriched across iterations
+    excluded_subjects: Set[str] = field(default_factory=set)
+    grid_cl_bounds: Tuple[float, float] = field(default_factory=lambda: _CL_BOUNDS_DEFAULT)
+    grid_v_bounds: Tuple[float, float] = field(default_factory=lambda: _V_BOUNDS_DEFAULT)
 
 
 def agent_inspect(state: AgentState) -> None:
-    """Placeholder inspection agent."""
-    _ = len(state.rows)
+    """Flag outlier subjects whose RMSE > 2x the median across all subjects."""
+    if not state.results:
+        return
+    rmses = [r["rmse"] for r in state.results]
+    median = _median(rmses)
+    threshold = median * 2.0
+    newly_excluded = {
+        str(r["subject_id"]) for r in state.results if r["rmse"] > threshold
+    }
+    state.excluded_subjects |= newly_excluded
 
 
 def agent_fit_individual(state: AgentState) -> None:
-    """Fit per-subject parameters via grid search."""
+    """Fit per-subject parameters using current grid bounds, skipping excluded subjects."""
+    cl_min, cl_max = state.grid_cl_bounds
+    v_min, v_max = state.grid_v_bounds
     results: List[Dict[str, float]] = []
     for subject_id, srows in sorted(state.by_subject.items()):
-        sse, cl, v = grid_search(srows)
+        if subject_id in state.excluded_subjects:
+            continue
+        sse, cl, v = grid_search_bounded(srows, cl_min, cl_max, v_min, v_max)
         rmse = math.sqrt(sse / max(len(srows), 1))
         results.append(
             {
@@ -45,11 +66,20 @@ def agent_fit_individual(state: AgentState) -> None:
 
 
 def agent_fit_pooled(state: AgentState) -> None:
-    """Fit pooled parameters across all rows."""
-    state.pooled_fit = grid_search(state.rows)
+    """Fit pooled parameters on active subjects, then refine grid bounds for next iteration."""
+    cl_min, cl_max = state.grid_cl_bounds
+    v_min, v_max = state.grid_v_bounds
+    active_rows = [r for r in state.rows if r.subject_id not in state.excluded_subjects]
+    if not active_rows:
+        return
+    state.pooled_fit = grid_search_bounded(active_rows, cl_min, cl_max, v_min, v_max)
+    # Refine grid bounds around best (CL, V) for next iteration
+    _, best_cl, best_v = state.pooled_fit
+    state.grid_cl_bounds = _zoom_bounds(best_cl, cl_min, cl_max)
+    state.grid_v_bounds = _zoom_bounds(best_v, v_min, v_max)
 
 
-def agent_report(state: AgentState, out_results, out_report, meta_path) -> None:
+def agent_report(state: AgentState, out_results: Path, out_report: Path, meta_path: Path) -> None:
     """Generate CSV results and a short markdown report."""
     if not state.pooled_fit or not state.results:
         return
@@ -61,11 +91,12 @@ def agent_report(state: AgentState, out_results, out_report, meta_path) -> None:
         state.pooled_fit,
         state.results,
         state.paper_insights,
+        state.excluded_subjects,
     )
 
 
 def agent_read_paper(
-    state: AgentState, pdf_path, api_key, model_name, provider: str
+    state: AgentState, pdf_path: Path, api_key: str, model_name: str, provider: str
 ) -> None:
     """Extract key model details from the paper using an LLM."""
     if state.paper_insights is not None:
@@ -75,12 +106,25 @@ def agent_read_paper(
             return
         state.paper_insights = extract_paper_insights(pdf_path, api_key, model_name)
         return
+    if provider == "gemini":
+        if not api_key:
+            return
+        state.paper_insights = extract_paper_insights_gemini(pdf_path, api_key, model_name)
+        return
     if provider == "local":
         state.paper_insights = extract_paper_insights_local(pdf_path, model_name)
         return
 
 
-def write_report(out_path, meta_path, rows, pooled_fit, results, paper_insights) -> None:
+def write_report(
+    out_path: Path,
+    meta_path: Path,
+    rows: List[Row],
+    pooled_fit: Tuple[float, float, float],
+    results: List[Dict[str, Any]],
+    paper_insights: Optional[Dict[str, Any]],
+    excluded_subjects: Optional[Set[str]] = None,
+) -> None:
     """Write a minimal markdown report for the POC run."""
     meta = load_metadata(meta_path)
     n_obs = len(rows)
@@ -122,10 +166,33 @@ def write_report(out_path, meta_path, rows, pooled_fit, results, paper_insights)
         f.write("- Coarse grid search only (no CI, no diagnostics)\n")
         f.write("- No plots in this POC\n")
 
+        if excluded_subjects:
+            f.write("\n## Outliers excluded\n")
+            f.write(f"- Subjects removed (RMSE > 2× median): {', '.join(sorted(excluded_subjects))}\n")
+
         if paper_insights:
             f.write("\n## Paper-derived model notes (LLM)\n")
             for key, val in paper_insights.items():
                 f.write(f"- {key}: {val}\n")
+
+
+def _median(values: List[float]) -> float:
+    """Return the median of a non-empty list."""
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def _zoom_bounds(best: float, lo: float, hi: float) -> Tuple[float, float]:
+    """Halve the log-space range around best, staying within [lo, hi]."""
+    log_lo = math.log10(lo)
+    log_hi = math.log10(hi)
+    log_best = math.log10(max(best, 1e-9))
+    half_range = (log_hi - log_lo) / 4.0  # halve the range each iteration
+    new_lo = 10 ** max(log_lo, log_best - half_range)
+    new_hi = 10 ** min(log_hi, log_best + half_range)
+    return (new_lo, new_hi)
 
 
 def should_stop(state: AgentState, iteration: int, max_iter: int, no_improve_stop: int) -> bool:

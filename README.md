@@ -1,46 +1,116 @@
-# PKPD Agent POC (Acocella 1984)
+# PKPD Agent
 
-This repository contains a minimal PK agent POC that, from raw data and a few task hints, rebuilds a simple PK model and generates a short report.
+Agentic PK modelling pipeline based on the Acocella 1984 study.
+Fits a one-compartment IV infusion model on raw concentration-time data using an iterative agent loop, with optional LLM-powered paper extraction.
 
-POC goals (very simple):
-- Basic data inspection
-- One‑compartment IV infusion PK model formulation
-- Rough fitting (grid search)
-- Simple comparison and report/CSV export
+Deployable as a REST API on **Google Cloud Run**, with **Gemini** as the default LLM provider.
 
-## Quick start
+---
+
+## How it works
+
+The agent loop runs up to 5 iterations. At each iteration:
+
+1. `agent_inspect` — flags outlier subjects (RMSE > 2× median) for exclusion
+2. `agent_fit_individual` — grid search per subject, within refined CL/V bounds
+3. `agent_fit_pooled` — pooled grid search, then zooms the search grid for next iteration
+4. `agent_read_paper` — extracts model details from the reference PDF via LLM (once)
+5. `agent_report` — writes results CSV and markdown report
+
+Each iteration narrows the parameter search space and excludes outliers detected in the previous run — the loop converges on progressively better fits.
+
+---
+
+## Quickstart (CLI)
 
 ```bash
-uv venv
-uv pip install -e .
-export ANTHROPIC_API_KEY="your_key_here"
+uv venv && uv pip install -e ".[gemini]"
+export GOOGLE_API_KEY="your_key"
 python3 -m poc.agent_poc
 ```
 
 Outputs:
-- `poc/results.csv` (per‑subject estimated parameters)
-- `poc/report.md` (short POC report, includes paper insights if LLM enabled)
+- `poc/results.csv` — per-subject CL, V, RMSE
+- `poc/report.md` — full run report with paper insights
 
-## Parallel agents
+---
 
-You can run the paper-reading agent in parallel with the fitting steps:
+## API (Cloud Run)
 
-```bash
-export PARALLEL_AGENTS=1
-python3 -m poc.agent_poc
-```
-
-Optional gate (only applied when parallel is enabled):
+### Run locally
 
 ```bash
-export PARALLEL_AGENTS=1
-export GATE_MAX_RMSE=2.0
-python3 -m poc.agent_poc
+uv pip install -e ".[gemini]"
+export GOOGLE_API_KEY="your_key"
+uvicorn poc.app:app --reload
 ```
 
-## Validation (simple)
+### Endpoints
 
-Generate residuals, a short summary, and optional plots:
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/run` | Trigger agent loop |
+| GET | `/status` | Poll run status |
+| GET | `/report` | Get latest markdown report |
+
+### Run with default dataset (Acocella 1984)
+
+```bash
+curl -X POST https://your-service.run.app/run
+```
+
+### Run with your own data
+
+Upload any CSV with columns: `ID, TIME, CONC, Dose, Condition`
+
+```bash
+curl -X POST https://your-service.run.app/run \
+  -F "data=@my_pk_data.csv"
+```
+
+### Poll and retrieve report
+
+```bash
+curl https://your-service.run.app/status
+curl https://your-service.run.app/report
+```
+
+---
+
+## Deploy to Cloud Run
+
+```bash
+gcloud run deploy pkpd-agent \
+  --source . \
+  --set-env-vars GOOGLE_API_KEY=your_key \
+  --region europe-west1 \
+  --allow-unauthenticated
+```
+
+---
+
+## LLM providers
+
+| Provider | Variable | Model |
+|----------|----------|-------|
+| Gemini (default) | `GOOGLE_API_KEY` | `gemini-1.5-flash` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-latest` |
+| Local (HuggingFace) | — | see `LOCAL_MODEL_NAME` |
+
+```bash
+# Switch provider
+export LLM_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=your_key
+
+# Local model
+export LLM_PROVIDER=local
+uv pip install -e ".[local]"
+```
+
+---
+
+## Validation
 
 ```bash
 python3 -m poc.validate
@@ -49,31 +119,45 @@ python3 -m poc.validate
 Outputs:
 - `poc/validation_residuals.csv`
 - `poc/validation_summary.md`
-- `poc/plots/obs_vs_pred.png` (if matplotlib is installed)
+- `poc/plots/obs_vs_pred.png` (requires matplotlib)
 
-## Local LLM option (HF)
+---
 
-You can switch to a local Hugging Face model for paper extraction:
+## Environment variables
 
-```bash
-export LLM_PROVIDER="local"
-export LOCAL_MODEL_NAME="mistralai/Mistral-7B-Instruct-v0.2"
-uv pip install -e ".[local]"
-python3 -m poc.agent_poc
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `gemini` | `gemini`, `anthropic`, or `local` |
+| `GOOGLE_API_KEY` | — | Required for Gemini |
+| `ANTHROPIC_API_KEY` | — | Required for Anthropic |
+| `PARALLEL_AGENTS` | `0` | Run paper extraction in parallel with fitting |
+| `GATE_MAX_RMSE` | — | Stop early if pooled RMSE exceeds threshold |
+| `SMOKE_TEST` | `0` | Minimal run (1 subject, 5 obs) for CI |
+
+---
+
+## Project structure
+
+```
+poc/
+  agent_poc.py   orchestration & entry point
+  agents.py      agent definitions + shared AgentState
+  model.py       PK math (predict, grid search)
+  llm_utils.py   Gemini / Anthropic / local LLM integration
+  io_utils.py    CSV parsing, metadata, I/O
+  validate.py    residuals & plots
+  app.py         FastAPI app (Cloud Run)
+data/
+  pkpd_acocella_1984_data.csv
+  acocella_1984_metadata.json
+  acocella_1984_paper.pdf
+Dockerfile
 ```
 
-Notes:
-- Requires `transformers` and `bitsandbytes` installed.
-- Local models are usually less reliable for structured extraction.
+---
 
-## Structure
+## Limitations
 
-- `data/`: data + metadata + reference PDF
-- `poc/agent_poc.py`: standalone POC agent (stdlib only)
-- `poc/steps.md`: step‑by‑step agent guidelines
-
-## POC limitations
-
-- No population estimation (no mixed effects)
-- Grid‑search fit (slow but dependency‑free)
-- No graphical diagnostics (no plots)
+- Single-compartment model only (no 2-cpt, no mixed effects)
+- Grid search fitting (no confidence intervals)
+- Single-user API (in-memory state)
