@@ -45,6 +45,18 @@ export GOOGLE_API_KEY="your_key"
 uvicorn poc.app:app --reload
 ```
 
+| Port | Usage |
+|------|-------|
+| `8000` | `uvicorn --reload` (dev local) |
+| `8080` | Docker / Cloud Run |
+
+### Run via Docker
+
+```bash
+docker build -t pkpd-agent .
+docker run -p 8080:8080 -e GOOGLE_API_KEY=your_key pkpd-agent
+```
+
 ### Endpoints
 
 | Method | Path | Description |
