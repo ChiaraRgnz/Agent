@@ -33,7 +33,7 @@ PAPER_PDF = Path("data/acocella_1984_paper.pdf")
 MAX_ITERATIONS = 5
 NO_IMPROVEMENT_STOP = 2
 ANTHROPIC_MODEL = "claude-3-5-sonnet-latest"
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 LOCAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
 
 

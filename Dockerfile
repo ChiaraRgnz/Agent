@@ -6,7 +6,7 @@ COPY pyproject.toml .
 COPY poc/ poc/
 COPY data/ data/
 
-RUN pip install --no-cache-dir ".[gemini]"
+RUN pip install --no-cache-dir ".[gemini,mcp]"
 
 ENV LLM_PROVIDER=gemini
 

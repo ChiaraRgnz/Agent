@@ -48,20 +48,20 @@ def extract_paper_insights(pdf_path: Path, api_key: str, model_name: str) -> Dic
 
 
 def extract_paper_insights_gemini(
-    pdf_path: Path, api_key: str, model_name: str = "gemini-1.5-flash"
+    pdf_path: Path, api_key: str, model_name: str = "gemini-2.5-flash-lite"
 ) -> Dict[str, Any]:
     """Call Gemini to extract key model details from a PK paper."""
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
     except Exception as exc:
-        return {"error": f"missing_google_generativeai: {exc}"}
+        return {"error": f"missing_google_genai: {exc}"}
 
     text = extract_pdf_text(pdf_path)
     if not text.strip():
         return {"error": "no_text_extracted"}
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+    client = genai.Client(api_key=api_key)
     prompt = (
         "You are reading a PK/PD paper. Extract the model details as JSON.\n"
         "Return compact JSON with keys: model_structure, dosing, parameters, units, "
@@ -69,13 +69,13 @@ def extract_paper_insights_gemini(
         "If a field is not found, set it to null.\n\n"
         f"PAPER TEXT:\n{text}\n"
     )
-    response = model.generate_content(
-        prompt,
-        generation_config={"temperature": 0, "max_output_tokens": 800},
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(temperature=0, max_output_tokens=800),
     )
-    content = response.text or ""
-    # Strip markdown code fences if present
-    content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    content = (response.text or "").strip()
+    content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
         return json.loads(content)
     except json.JSONDecodeError:
