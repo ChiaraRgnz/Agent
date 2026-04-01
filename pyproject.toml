@@ -14,6 +14,9 @@ dependencies = [
 gemini = [
   "google-generativeai>=0.7.0",
 ]
+mcp = [
+  "mcp>=1.0.0",
+]
 local = [
   "transformers>=4.40.0",
   "bitsandbytes>=0.43.0",

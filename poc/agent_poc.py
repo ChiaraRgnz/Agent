@@ -76,7 +76,11 @@ def run_agent_loop(state: AgentState) -> None:
 
 
 def main() -> None:
-    """Entry point: load data, build state, run agent loop."""
+    """Entry point: orchestrated (MCP) or fixed pipeline depending on USE_ORCHESTRATOR."""
+    if _orchestrator_enabled():
+        from .orchestrator import run_orchestrated
+        run_orchestrated(_anthropic_key())
+        return
     rows = read_rows(DATA_CSV)
     if _smoke_test_enabled():
         rows = _smoke_subset(rows)
@@ -138,6 +142,13 @@ def _parallel_enabled() -> bool:
     import os
 
     return os.environ.get("PARALLEL_AGENTS", "0").strip() == "1"
+
+
+def _orchestrator_enabled() -> bool:
+    """Return True if USE_ORCHESTRATOR is enabled."""
+    import os
+
+    return os.environ.get("USE_ORCHESTRATOR", "0").strip() == "1"
 
 
 def _gate_passed(state: AgentState) -> bool:
